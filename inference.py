@@ -10,15 +10,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
 
 # =============================================================================
-# 1. 설정 및 시드 고정
+# [설정] 경로 및 하이퍼파라미터 (Train과 동일해야 함)
 # =============================================================================
+base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400" 
 
-# [사용자 설정] 데이터 파일이 있는 실제 경로
-base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400"
-
-# 하이퍼파라미터
 NUM_CLASSES = 531
-MAX_FEATURES = 2000
+MAX_FEATURES = 5000   # <--- 기존 2000에서 5000으로 수정
 HIDDEN_DIM = 128
 BATCH_SIZE = 32
 
@@ -34,9 +31,8 @@ def seed_everything(seed=42):
     print(f"[Info] Random Seed set to {seed}")
 
 # =============================================================================
-# 2. 모델 클래스 정의 (Train.py와 동일)
+# 모델 정의 (Train과 동일)
 # =============================================================================
-
 class LabelGCN(nn.Module):
     def __init__(self, emb_dim, num_layers=2, dropout=0.5):
         super().__init__()
@@ -75,9 +71,8 @@ class GCNEnhancedClassifier(nn.Module):
         return logits
 
 # =============================================================================
-# 3. 유틸리티 함수
+# 유틸리티
 # =============================================================================
-
 def load_adjacency_matrix(file_path, num_classes):
     adj = torch.eye(num_classes)
     if os.path.exists(file_path):
@@ -99,13 +94,8 @@ def normalize_adj(adj):
     return torch.matmul(torch.matmul(d_mat_inv_sqrt, adj), d_mat_inv_sqrt)
 
 def load_test_corpus(path):
-    """
-    test_corpus.txt 로드 (product_id \t text)
-    Returns: list of pids, list of texts
-    """
     pids = []
     texts = []
-    
     print(f"[Info] 테스트 파일 로드 중: {path}")
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -114,62 +104,55 @@ def load_test_corpus(path):
                 pid, text = parts
                 pids.append(pid)
                 texts.append(text)
-                
-    print(f" -> 총 {len(pids)}개의 테스트 샘플 로드 완료.")
+    print(f" -> 총 {len(pids)}개의 테스트 샘플 로드.")
     return pids, texts
 
 # =============================================================================
-# 4. Inference Main Code
+# Main Inference Logic
 # =============================================================================
-
 def main():
     seed_everything(42)
 
-    # 1. 경로 설정
     if not os.path.exists(base_path):
-        print(f"[Error] 경로를 찾을 수 없습니다: {base_path}")
+        print(f"[Error] 경로 없음: {base_path}")
         return
     os.chdir(base_path)
-    print(f"[Info] Working Directory: {os.getcwd()}")
+    print(f"[Info] 작업 경로: {os.getcwd()}")
 
-    # 파일 경로
     train_file = "train_data.csv"
     test_file = "test_corpus.txt"
     hierarchy_file = "class_hierarchy.txt"
     model_path = "best_model.pth"
     output_file = "20252R0136DATA30400_final.csv"
 
-    # 2. Vectorizer 학습 (Train Data 기준)
-    print("[Info] 훈련 데이터 로드 및 TF-IDF 학습 (Fit)...")
+    # 1. Vectorizer 학습
+    print(f"[Info] Train 데이터 로드 및 Vectorizer(Max: {MAX_FEATURES}) Fit...")
     if not os.path.exists(train_file):
-        print("[Error] 훈련 데이터 파일이 없습니다. main.py를 먼저 실행하세요.")
+        print("[Error] train_data.csv 없음.")
         return
     
     df_train = pd.read_csv(train_file)
     vectorizer = TfidfVectorizer(max_features=MAX_FEATURES)
     vectorizer.fit(df_train['text'].fillna(""))
 
-    # 3. 테스트 데이터 로드 및 변환
+    # 2. 테스트 데이터 변환
     if not os.path.exists(test_file):
-        print("[Error] 테스트 코퍼스 파일이 없습니다.")
+        print("[Error] test_corpus.txt 없음.")
         return
 
-    test_pids, test_texts = load_test_corpus(test_file) # PID와 Text 분리
-
-    print("[Info] 테스트 텍스트 벡터화 (Transform)...")
+    test_pids, test_texts = load_test_corpus(test_file)
+    print("[Info] Test 텍스트 벡터화...")
     X_test_matrix = vectorizer.transform(test_texts).toarray()
     X_test_tensor = torch.FloatTensor(X_test_matrix)
 
-    # DataLoader
     test_dataset = TensorDataset(X_test_tensor)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    # 4. 모델 로드
-    print("[Info] 모델 초기화 및 가중치 로드...")
+    # 3. 모델 로드
     adj = load_adjacency_matrix(hierarchy_file, NUM_CLASSES)
     A_hat = normalize_adj(adj)
-    
     dummy_emb = torch.randn(NUM_CLASSES, HIDDEN_DIM)
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     model = GCNEnhancedClassifier(
@@ -181,40 +164,34 @@ def main():
     ).to(device)
 
     if not os.path.exists(model_path):
-        print(f"[Error] 모델 가중치 파일({model_path})이 없습니다.")
+        print(f"[Error] 모델 파일({model_path}) 없음.")
         return
 
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    # 5. 예측 수행
-    print(f"[Info] 예측 수행 중 (Top-3)... Device: {device}")
-    
+    # 4. 예측
+    print(f"[Info] 예측 수행 (Top-3)... Device: {device}")
     all_pred_strings = []
     
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Inference"):
             inputs = batch[0].to(device)
             logits = model(inputs)
-            
-            # 상위 3개 클래스 추출
             _, topk_indices = torch.topk(logits, k=3, dim=1)
             
             for idx_list in topk_indices.cpu().numpy():
-                # 쉼표 구분 포맷 (예: "1,5,10")
                 labels_str = ",".join(map(str, sorted(idx_list)))
                 all_pred_strings.append(labels_str)
 
-    # 6. 결과 저장 (수정됨: pid -> id)
-    print("[Info] 제출 파일 생성 중...")
-    
+    # 5. 저장 (id, labels)
+    print("[Info] 결과 저장 중...")
     submission = pd.DataFrame({
-        'id': test_pids,           # 컬럼명을 'id'로 변경 (기존 pid 값 사용)
-        'labels': all_pred_strings # 'labels'는 쉼표 구분 문자열
+        'id': test_pids,
+        'labels': all_pred_strings
     })
-    
     submission.to_csv(output_file, index=False, encoding='utf-8-sig')
-    print(f"[Success] 완료! 저장된 파일: {os.path.abspath(output_file)}")
+    print(f"[Success] 완료: {os.path.abspath(output_file)}")
 
 if __name__ == "__main__":
     main()
