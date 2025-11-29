@@ -8,15 +8,16 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
+import csv
 
 # =============================================================================
 # 1. 설정 및 시드 고정
 # =============================================================================
 
-# [사용자 설정] 데이터 파일이 있는 실제 경로
+# [사용자 설정] 데이터 파일이 있는 실제 경로 (train.py와 동일하게 유지)
 base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400"
 
-# 하이퍼파라미터 (Train과 동일해야 함)
+# 하이퍼파라미터
 NUM_CLASSES = 531
 MAX_FEATURES = 2000
 HIDDEN_DIM = 128
@@ -34,7 +35,7 @@ def seed_everything(seed=42):
     print(f"[Info] Random Seed set to {seed}")
 
 # =============================================================================
-# 2. 모델 클래스 정의 (Train.py와 동일해야 가중치 로드 가능)
+# 2. 모델 클래스 정의 (Train.py와 완벽히 동일해야 함)
 # =============================================================================
 
 class LabelGCN(nn.Module):
@@ -75,7 +76,7 @@ class GCNEnhancedClassifier(nn.Module):
         return logits
 
 # =============================================================================
-# 3. 유틸리티 함수 (그래프 로드 및 정규화)
+# 3. 유틸리티 함수
 # =============================================================================
 
 def load_adjacency_matrix(file_path, num_classes):
@@ -98,67 +99,86 @@ def normalize_adj(adj):
     d_mat_inv_sqrt = torch.diag(d_inv_sqrt)
     return torch.matmul(torch.matmul(d_mat_inv_sqrt, adj), d_mat_inv_sqrt)
 
+def load_test_corpus(path):
+    """
+    제공된 Baseline 방식을 사용하여 test_corpus.txt를 로드합니다.
+    Format: product_id \t text
+    Returns: list of pids, list of texts
+    """
+    pids = []
+    texts = []
+    
+    print(f"[Info] 테스트 파일 로드 중: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            # 탭(\t)을 기준으로 최대 1번만 분리
+            parts = line.strip().split("\t", 1)
+            if len(parts) == 2:
+                pid, text = parts
+                pids.append(pid)
+                texts.append(text)
+            else:
+                # 형식이 맞지 않는 라인이 있다면 경고 출력 (혹은 무시)
+                pass
+                
+    print(f" -> 총 {len(pids)}개의 테스트 샘플 로드 완료.")
+    return pids, texts
+
 # =============================================================================
-# 4. Inference 실행
+# 4. Inference Main Code
 # =============================================================================
 
 def main():
     seed_everything(42)
 
-    # 경로 이동
+    # 1. 경로 설정
     if not os.path.exists(base_path):
         print(f"[Error] 경로를 찾을 수 없습니다: {base_path}")
         return
     os.chdir(base_path)
     print(f"[Info] Working Directory: {os.getcwd()}")
 
-    # 파일 경로
+    # 파일 경로 정의
     train_file = "train_data.csv"
     test_file = "test_corpus.txt"
     hierarchy_file = "class_hierarchy.txt"
     model_path = "best_model.pth"
     output_file = "20252R0136DATA30400_final.csv"
 
-    # 1. TF-IDF Vectorizer 준비
-    # (학습 데이터로 Fit을 해야 feature space가 동일함)
-    print("[Info] 훈련 데이터를 로드하여 Vectorizer Fit 수행 중...")
+    # 2. Vectorizer 학습 (Train Data 기준)
+    print("[Info] 훈련 데이터 로드 및 TF-IDF 학습 (Fit)...")
     if not os.path.exists(train_file):
-        print("[Error] 훈련 데이터 파일이 없습니다.")
+        print("[Error] 훈련 데이터 파일(train_data.csv)이 없습니다. main.py를 먼저 실행하세요.")
         return
     
     df_train = pd.read_csv(train_file)
     vectorizer = TfidfVectorizer(max_features=MAX_FEATURES)
-    vectorizer.fit(df_train['text'].fillna("")) # FIT
+    # NaN 처리 후 Fit
+    vectorizer.fit(df_train['text'].fillna(""))
 
-    # 2. 테스트 데이터 로드 및 변환
-    print(f"[Info] 테스트 데이터 로드: {test_file}")
+    # 3. 테스트 데이터 로드 및 변환 (Transform)
     if not os.path.exists(test_file):
-        print("[Error] 테스트 데이터 파일이 없습니다.")
+        print("[Error] 테스트 코퍼스 파일이 없습니다.")
         return
 
-    with open(test_file, 'r', encoding='utf-8') as f:
-        test_lines = [line.strip() for line in f.readlines()]
-    
-    print(f" -> 총 {len(test_lines)}개의 테스트 문서")
-    
-    print("[Info] Vectorizer Transform 수행 중...")
-    X_test_matrix = vectorizer.transform(test_lines).toarray()
+    # Baseline 방식의 파서 사용 (PID, Text 분리)
+    test_pids, test_texts = load_test_corpus(test_file)
+
+    print("[Info] 테스트 텍스트 벡터화 (Transform)...")
+    X_test_matrix = vectorizer.transform(test_texts).toarray()
     X_test_tensor = torch.FloatTensor(X_test_matrix)
 
-    # DataLoader 생성 (배치 단위 추론을 위해)
+    # DataLoader 생성
     test_dataset = TensorDataset(X_test_tensor)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    # 3. 모델 구조 준비 및 가중치 로드
+    # 4. 모델 로드
     print("[Info] 모델 초기화 및 가중치 로드...")
-    
-    # Adjacency Matrix 준비 (모델 초기화에 필요)
     adj = load_adjacency_matrix(hierarchy_file, NUM_CLASSES)
     A_hat = normalize_adj(adj)
     
-    # 임의의 초기 임베딩 (Load State Dict 시 덮어씌워짐, Shape만 맞으면 됨)
+    # 더미 임베딩 (Load State Dict 시 덮어씌워짐)
     dummy_emb = torch.randn(NUM_CLASSES, HIDDEN_DIM)
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     model = GCNEnhancedClassifier(
@@ -170,43 +190,45 @@ def main():
     ).to(device)
 
     if not os.path.exists(model_path):
-        print(f"[Error] 모델 가중치 파일이 없습니다: {model_path}")
+        print(f"[Error] 모델 가중치 파일({model_path})이 없습니다. train.py를 먼저 실행하세요.")
         return
 
-    # 가중치 로드
     model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval() # 평가 모드 전환
+    model.eval()
 
-    # 4. 추론 (Inference)
-    print("[Info] 예측 수행 중 (Top-3)...")
+    # 5. 예측 (Top-3 Inference)
+    print(f"[Info] 예측 수행 중 (Top-3 Class)... Device: {device}")
     
-    all_predictions = []
+    all_pred_strings = []
     
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Inference"):
             inputs = batch[0].to(device)
-            logits = model(inputs) # (Batch, Num_Classes)
+            logits = model(inputs)
             
-            # 각 샘플별 상위 3개 클래스 인덱스 추출
-            # topk_indices shape: (Batch, 3)
+            # 상위 3개 클래스 추출
             _, topk_indices = torch.topk(logits, k=3, dim=1)
             
-            # 리스트로 변환하여 저장
+            # 결과 포맷팅
             for idx_list in topk_indices.cpu().numpy():
-                # 정수형 인덱스를 문자열로 변환하여 공백으로 조인
-                # 예: [1, 5, 10] -> "1 5 10"
-                categories_str = " ".join(map(str, idx_list))
-                all_predictions.append(categories_str)
+                # 쉼표로 구분 (예: "1,5,10")
+                labels_str = ",".join(map(str, sorted(idx_list))) # sorted는 선택사항, 베이스라인 참조
+                all_pred_strings.append(labels_str)
 
-    # 5. 결과 저장 (Submission Format)
+    # 6. 결과 저장
+    # 요구사항: 컬럼명은 pid, labels
     print("[Info] 제출 파일 생성 중...")
+    
+    # pandas로 저장 시 쿼팅 이슈 등을 방지하고 정확한 포맷을 위해 csv 모듈 사용 가능하지만
+    # pandas가 편리하므로 pandas로 저장하되 컬럼명 준수
     submission = pd.DataFrame({
-        'id': range(len(test_lines)), # 0부터 시작하는 ID
-        'categories': all_predictions
+        'pid': test_pids,
+        'labels': all_pred_strings
     })
-
+    
     submission.to_csv(output_file, index=False, encoding='utf-8-sig')
-    print(f"[Success] 완료! 파일 저장됨: {os.path.abspath(output_file)}")
+    print(f"[Success] 완료! 저장된 파일: {os.path.abspath(output_file)}")
+    print(f" -> Sample: PID={test_pids[0]}, Labels={all_pred_strings[0]}")
 
 if __name__ == "__main__":
     main()
