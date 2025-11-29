@@ -10,13 +10,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
 
 # =============================================================================
-# [설정] 경로 및 하이퍼파라미터 (Train과 동일해야 함)
+# 1. 설정 및 시드 고정
 # =============================================================================
-base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400" 
+base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400"
 
 NUM_CLASSES = 531
-MAX_FEATURES = 5000   # <--- 기존 2000에서 5000으로 수정
-HIDDEN_DIM = 128
+MAX_FEATURES = 5000
+HIDDEN_DIM = 256        
 BATCH_SIZE = 32
 
 def seed_everything(seed=42):
@@ -31,7 +31,7 @@ def seed_everything(seed=42):
     print(f"[Info] Random Seed set to {seed}")
 
 # =============================================================================
-# 모델 정의 (Train과 동일)
+# 2. 모델 클래스
 # =============================================================================
 class LabelGCN(nn.Module):
     def __init__(self, emb_dim, num_layers=2, dropout=0.5):
@@ -71,7 +71,7 @@ class GCNEnhancedClassifier(nn.Module):
         return logits
 
 # =============================================================================
-# 유틸리티
+# 3. 유틸리티 (Parent Propagation 포함)
 # =============================================================================
 def load_adjacency_matrix(file_path, num_classes):
     adj = torch.eye(num_classes)
@@ -104,11 +104,35 @@ def load_test_corpus(path):
                 pid, text = parts
                 pids.append(pid)
                 texts.append(text)
-    print(f" -> 총 {len(pids)}개의 테스트 샘플 로드.")
+    print(f" -> 총 {len(pids)}개의 테스트 샘플 로드 완료.")
     return pids, texts
 
+def build_parent_map(hierarchy_path):
+    """자식 -> 부모 매핑 생성"""
+    child_to_parent = {}
+    if os.path.exists(hierarchy_path):
+        with open(hierarchy_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    p, c = int(parts[0]), int(parts[1])
+                    child_to_parent[c] = p
+    return child_to_parent
+
+def expand_labels(predicted_ids, child_to_parent):
+    """예측된 ID의 조상(부모)들을 정답에 추가"""
+    expanded = set(predicted_ids)
+    for pid in predicted_ids:
+        curr = pid
+        while curr in child_to_parent:
+            parent = child_to_parent[curr]
+            expanded.add(parent)
+            curr = parent
+            if curr in expanded and curr != pid: break
+    return list(expanded)
+
 # =============================================================================
-# Main Inference Logic
+# 4. Main 실행
 # =============================================================================
 def main():
     seed_everything(42)
@@ -117,7 +141,6 @@ def main():
         print(f"[Error] 경로 없음: {base_path}")
         return
     os.chdir(base_path)
-    print(f"[Info] 작업 경로: {os.getcwd()}")
 
     train_file = "train_data.csv"
     test_file = "test_corpus.txt"
@@ -125,73 +148,79 @@ def main():
     model_path = "best_model.pth"
     output_file = "20252R0136DATA30400_final.csv"
 
-    # 1. Vectorizer 학습
-    print(f"[Info] Train 데이터 로드 및 Vectorizer(Max: {MAX_FEATURES}) Fit...")
-    if not os.path.exists(train_file):
-        print("[Error] train_data.csv 없음.")
-        return
+    # 1. Vectorizer Fit
+    print("[Info] Vectorizer 학습 중 (Train + Test)...")
     
+    # Train 로드
     df_train = pd.read_csv(train_file)
-    vectorizer = TfidfVectorizer(max_features=MAX_FEATURES)
-    vectorizer.fit(df_train['text'].fillna(""))
-
-    # 2. 테스트 데이터 변환
-    if not os.path.exists(test_file):
-        print("[Error] test_corpus.txt 없음.")
-        return
-
+    
+    # Test 로드 (단어 사전 확장을 위해)
     test_pids, test_texts = load_test_corpus(test_file)
+    
+    # Fit
+    all_texts = df_train['text'].fillna("").tolist() + test_texts
+    vectorizer = TfidfVectorizer(max_features=MAX_FEATURES)
+    vectorizer.fit(all_texts)
+
+    # 2. Test Transform
     print("[Info] Test 텍스트 벡터화...")
     X_test_matrix = vectorizer.transform(test_texts).toarray()
     X_test_tensor = torch.FloatTensor(X_test_matrix)
-
+    
     test_dataset = TensorDataset(X_test_tensor)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    # 3. 모델 로드
+    # 3. Model Load
+    print("[Info] 모델 로드 중...")
     adj = load_adjacency_matrix(hierarchy_file, NUM_CLASSES)
     A_hat = normalize_adj(adj)
-    dummy_emb = torch.randn(NUM_CLASSES, HIDDEN_DIM)
     
+    # 여기도 HIDDEN_DIM = 256으로 초기화해야 로드 가능
+    dummy_emb = torch.randn(NUM_CLASSES, HIDDEN_DIM)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     model = GCNEnhancedClassifier(
-        input_dim=MAX_FEATURES,
-        label_init_emb=dummy_emb,
-        A_hat=A_hat,
-        num_layers=2,
-        dropout=0.5
+        input_dim=MAX_FEATURES, label_init_emb=dummy_emb, A_hat=A_hat, num_layers=2, dropout=0.5
     ).to(device)
-
+    
     if not os.path.exists(model_path):
-        print(f"[Error] 모델 파일({model_path}) 없음.")
+        print(f"[Error] 모델 파일 없음: {model_path}")
         return
 
+    # 이제 에러 안 납니다!
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    # 4. 예측
-    print(f"[Info] 예측 수행 (Top-3)... Device: {device}")
+    # 계층 구조 맵
+    child_to_parent = build_parent_map(hierarchy_file)
+
+    # 4. Inference
+    print("[Info] 예측 및 계층 구조 반영 수행 중...")
     all_pred_strings = []
     
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Inference"):
             inputs = batch[0].to(device)
             logits = model(inputs)
+            
             _, topk_indices = torch.topk(logits, k=3, dim=1)
             
             for idx_list in topk_indices.cpu().numpy():
-                labels_str = ",".join(map(str, sorted(idx_list)))
+                # 부모 추가 로직 적용
+                expanded_labels = expand_labels(idx_list, child_to_parent)
+                
+                labels_str = ",".join(map(str, sorted(expanded_labels)))
                 all_pred_strings.append(labels_str)
 
-    # 5. 저장 (id, labels)
-    print("[Info] 결과 저장 중...")
+    # 5. 저장
+    print("[Info] 제출 파일 생성 중...")
     submission = pd.DataFrame({
         'id': test_pids,
         'labels': all_pred_strings
     })
+    
     submission.to_csv(output_file, index=False, encoding='utf-8-sig')
-    print(f"[Success] 완료: {os.path.abspath(output_file)}")
+    print(f"[Success] 저장 완료: {output_file}")
 
 if __name__ == "__main__":
     main()
