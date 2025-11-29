@@ -8,13 +8,12 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
-import csv
 
 # =============================================================================
 # 1. 설정 및 시드 고정
 # =============================================================================
 
-# [사용자 설정] 데이터 파일이 있는 실제 경로 (train.py와 동일하게 유지)
+# [사용자 설정] 데이터 파일이 있는 실제 경로
 base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400"
 
 # 하이퍼파라미터
@@ -35,7 +34,7 @@ def seed_everything(seed=42):
     print(f"[Info] Random Seed set to {seed}")
 
 # =============================================================================
-# 2. 모델 클래스 정의 (Train.py와 완벽히 동일해야 함)
+# 2. 모델 클래스 정의 (Train.py와 동일)
 # =============================================================================
 
 class LabelGCN(nn.Module):
@@ -101,8 +100,7 @@ def normalize_adj(adj):
 
 def load_test_corpus(path):
     """
-    제공된 Baseline 방식을 사용하여 test_corpus.txt를 로드합니다.
-    Format: product_id \t text
+    test_corpus.txt 로드 (product_id \t text)
     Returns: list of pids, list of texts
     """
     pids = []
@@ -111,15 +109,11 @@ def load_test_corpus(path):
     print(f"[Info] 테스트 파일 로드 중: {path}")
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
-            # 탭(\t)을 기준으로 최대 1번만 분리
             parts = line.strip().split("\t", 1)
             if len(parts) == 2:
                 pid, text = parts
                 pids.append(pid)
                 texts.append(text)
-            else:
-                # 형식이 맞지 않는 라인이 있다면 경고 출력 (혹은 무시)
-                pass
                 
     print(f" -> 총 {len(pids)}개의 테스트 샘플 로드 완료.")
     return pids, texts
@@ -138,7 +132,7 @@ def main():
     os.chdir(base_path)
     print(f"[Info] Working Directory: {os.getcwd()}")
 
-    # 파일 경로 정의
+    # 파일 경로
     train_file = "train_data.csv"
     test_file = "test_corpus.txt"
     hierarchy_file = "class_hierarchy.txt"
@@ -148,27 +142,25 @@ def main():
     # 2. Vectorizer 학습 (Train Data 기준)
     print("[Info] 훈련 데이터 로드 및 TF-IDF 학습 (Fit)...")
     if not os.path.exists(train_file):
-        print("[Error] 훈련 데이터 파일(train_data.csv)이 없습니다. main.py를 먼저 실행하세요.")
+        print("[Error] 훈련 데이터 파일이 없습니다. main.py를 먼저 실행하세요.")
         return
     
     df_train = pd.read_csv(train_file)
     vectorizer = TfidfVectorizer(max_features=MAX_FEATURES)
-    # NaN 처리 후 Fit
     vectorizer.fit(df_train['text'].fillna(""))
 
-    # 3. 테스트 데이터 로드 및 변환 (Transform)
+    # 3. 테스트 데이터 로드 및 변환
     if not os.path.exists(test_file):
         print("[Error] 테스트 코퍼스 파일이 없습니다.")
         return
 
-    # Baseline 방식의 파서 사용 (PID, Text 분리)
-    test_pids, test_texts = load_test_corpus(test_file)
+    test_pids, test_texts = load_test_corpus(test_file) # PID와 Text 분리
 
     print("[Info] 테스트 텍스트 벡터화 (Transform)...")
     X_test_matrix = vectorizer.transform(test_texts).toarray()
     X_test_tensor = torch.FloatTensor(X_test_matrix)
 
-    # DataLoader 생성
+    # DataLoader
     test_dataset = TensorDataset(X_test_tensor)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
@@ -177,7 +169,6 @@ def main():
     adj = load_adjacency_matrix(hierarchy_file, NUM_CLASSES)
     A_hat = normalize_adj(adj)
     
-    # 더미 임베딩 (Load State Dict 시 덮어씌워짐)
     dummy_emb = torch.randn(NUM_CLASSES, HIDDEN_DIM)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -190,14 +181,14 @@ def main():
     ).to(device)
 
     if not os.path.exists(model_path):
-        print(f"[Error] 모델 가중치 파일({model_path})이 없습니다. train.py를 먼저 실행하세요.")
+        print(f"[Error] 모델 가중치 파일({model_path})이 없습니다.")
         return
 
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    # 5. 예측 (Top-3 Inference)
-    print(f"[Info] 예측 수행 중 (Top-3 Class)... Device: {device}")
+    # 5. 예측 수행
+    print(f"[Info] 예측 수행 중 (Top-3)... Device: {device}")
     
     all_pred_strings = []
     
@@ -209,26 +200,21 @@ def main():
             # 상위 3개 클래스 추출
             _, topk_indices = torch.topk(logits, k=3, dim=1)
             
-            # 결과 포맷팅
             for idx_list in topk_indices.cpu().numpy():
-                # 쉼표로 구분 (예: "1,5,10")
-                labels_str = ",".join(map(str, sorted(idx_list))) # sorted는 선택사항, 베이스라인 참조
+                # 쉼표 구분 포맷 (예: "1,5,10")
+                labels_str = ",".join(map(str, sorted(idx_list)))
                 all_pred_strings.append(labels_str)
 
-    # 6. 결과 저장
-    # 요구사항: 컬럼명은 pid, labels
+    # 6. 결과 저장 (수정됨: pid -> id)
     print("[Info] 제출 파일 생성 중...")
     
-    # pandas로 저장 시 쿼팅 이슈 등을 방지하고 정확한 포맷을 위해 csv 모듈 사용 가능하지만
-    # pandas가 편리하므로 pandas로 저장하되 컬럼명 준수
     submission = pd.DataFrame({
-        'pid': test_pids,
-        'labels': all_pred_strings
+        'id': test_pids,           # 컬럼명을 'id'로 변경 (기존 pid 값 사용)
+        'labels': all_pred_strings # 'labels'는 쉼표 구분 문자열
     })
     
     submission.to_csv(output_file, index=False, encoding='utf-8-sig')
     print(f"[Success] 완료! 저장된 파일: {os.path.abspath(output_file)}")
-    print(f" -> Sample: PID={test_pids[0]}, Labels={all_pred_strings[0]}")
 
 if __name__ == "__main__":
     main()
