@@ -3,3 +3,10 @@ pandas
 scikit-learn
 torch
 tqdm
+torch
+pandas
+numpy
+tqdm
+scikit-learn
+transformers
+sentence-transformers
