@@ -8,9 +8,9 @@ from transformers import BertTokenizer, BertForSequenceClassification
 from tqdm import tqdm
 
 # =============================================================================
-# [설정]
+# [설정] 경로 (코랩용 ".")
 # =============================================================================
-base_path = r"C:\Users\wangm\Documents\Final project\20252R0136DATA30400"
+base_path = "."
 BATCH_SIZE = 32
 
 def seed_everything(seed=42):
@@ -26,7 +26,7 @@ def seed_everything(seed=42):
 def load_test_corpus(path):
     pids = []
     texts = []
-    print(f"[Info] 테스트 파일 로드 중...")
+    print(f"[Info] 테스트 파일 로드 중: {path}")
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split("\t", 1)
@@ -42,12 +42,10 @@ def build_parent_map(hierarchy_path):
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 2:
-                    p, c = int(parts[0]), int(parts[1])
-                    child_to_parent[c] = p
+                    child_to_parent[int(parts[1])] = int(parts[0])
     return child_to_parent
 
 def expand_labels(predicted_ids, child_to_parent):
-    # 자식을 맞히면 부모도 정답에 추가
     expanded = set(predicted_ids)
     for pid in predicted_ids:
         curr = pid
@@ -62,9 +60,7 @@ def main():
     seed_everything(42)
     
     if not os.path.exists(base_path):
-        print(f"[Error] 경로 없음: {base_path}")
-        return
-    os.chdir(base_path)
+        os.chdir(base_path)
 
     test_file = "test_corpus.txt"
     hierarchy_file = "class_hierarchy.txt"
@@ -74,10 +70,10 @@ def main():
     # 1. 테스트 데이터 로드
     test_pids, test_texts = load_test_corpus(test_file)
 
-    # 2. 모델 로드
+    # 2. 저장된 모델 로드
     print("[Info] 학습된 BERT 모델 로드 중...")
     if not os.path.exists(model_dir):
-        print("[Error] 모델이 없습니다. train_bert.py 먼저 실행하세요.")
+        print(f"[Error] 모델 폴더가 없습니다: {model_dir}. train_bert.py가 성공했는지 확인하세요.")
         return
 
     tokenizer = BertTokenizer.from_pretrained(model_dir)
@@ -87,7 +83,7 @@ def main():
     model.to(device)
     model.eval()
 
-    # 3. 토큰화
+    # 3. 토큰화 (여기 수정됨!)
     print("[Info] 테스트 데이터 토큰화...")
     input_ids = []
     attention_masks = []
@@ -97,7 +93,10 @@ def main():
                             sent, 
                             add_special_tokens = True, 
                             max_length = 128,
-                            pad_to_max_length = True,
+                            
+                            # [핵심 수정] 아까 에러 나던 부분 고쳤습니다!
+                            padding = 'max_length',
+                            
                             return_attention_mask = True,
                             return_tensors = 'pt',
                             truncation=True
@@ -105,6 +104,7 @@ def main():
         input_ids.append(encoded_dict['input_ids'])
         attention_masks.append(encoded_dict['attention_mask'])
 
+    # 이제 에러 안 납니다
     input_ids = torch.cat(input_ids, dim=0)
     attention_masks = torch.cat(attention_masks, dim=0)
 
@@ -122,16 +122,15 @@ def main():
             b_input_mask = batch[1].to(device)
 
             outputs = model(b_input_ids, token_type_ids=None, attention_mask=b_input_mask)
-            logits = outputs.logits # (Batch, Num_Classes)
+            logits = outputs.logits 
             
-            # [핵심] 가장 확실한 1개(Top-1)만 뽑음 -> 오답 줄임
+            # Top-1만 뽑고 부모 확장 (이게 점수 제일 잘 나옴)
             _, topk_indices = torch.topk(logits, k=1, dim=1)
 
             for idx_list in topk_indices.cpu().numpy():
-                # 계층 구조(부모) 추가
                 expanded = expand_labels(idx_list, child_to_parent)
                 
-                # 최대 3개 제한 (과제 규칙 준수)
+                # 최대 3개 제한
                 if len(expanded) > 3: expanded = sorted(expanded)[:3]
                 elif len(expanded) < 2: 
                     if 0 not in expanded: expanded.append(0)
