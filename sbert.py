@@ -61,7 +61,6 @@ class TaxonomyLoader:
                 for line in f:
                     parts = line.strip().split('\t')
                     if len(parts) >= 2:
-                        # ID<tab>Name 형식 파싱
                         idx, name = int(parts[0]), parts[1]
                         self.label_map[name] = idx
                         self.id_map[idx] = name
@@ -79,7 +78,6 @@ class TaxonomyLoader:
                 for line in f:
                     parts = line.strip().split('\t')
                     if len(parts) == 2:
-                        # ParentID<tab>ChildID
                         parent_id, child_id = int(parts[0]), int(parts[1])
                         if parent_id in self.id_map and child_id in self.id_map:
                             self.graph.add_edge(parent_id, child_id)
@@ -94,7 +92,6 @@ class TaxonomyLoader:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for line in f:
-                    # Name: kw1, kw2...
                     if ':' in line:
                         name_part, keywords_part = line.strip().split(':', 1)
                         label_name = name_part.strip()
@@ -116,7 +113,6 @@ class TaxonomyLoader:
 class ReviewDataset(Dataset):
     """
     텍스트 데이터를 로드 및 관리하는 클래스.
-    입력 파일 형식: ID <tab> Product_Name <tab> Review_Text 처리를 강화함.
     """
     def __init__(self, data_samples: List[Dict[str, Union[int, str]]]) -> None:
         self.samples = data_samples
@@ -130,8 +126,8 @@ class ReviewDataset(Dataset):
     @staticmethod
     def load_corpus(file_path: str) -> List[Dict[str, Union[int, str]]]:
         """
-        파일을 읽어 ID와 Review Text를 추출합니다.
-        오류가 발생한 라인은 건너뛰고 경고를 출력합니다.
+        파일을 읽어 '첫 번째 공백'을 기준으로 ID와 나머지 텍스트를 분리합니다.
+        ID는 정수로 변환하며, 변환 실패 시 해당 라인은 건너뜁니다.
         """
         if not os.path.exists(file_path):
             print(f"[Warning] File not found: {file_path}")
@@ -141,36 +137,29 @@ class ReviewDataset(Dataset):
         parse_errors = 0
         
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_idx, line in enumerate(f):
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 
+                # 첫 번째 공백(Space/Tab) 기준으로 최대 1번만 분리 (ID / Text)
+                parts = line.split(maxsplit=1)
+                
+                if len(parts) < 2:
+                    parse_errors += 1
+                    continue
+                    
+                row_id_str, text_content = parts[0], parts[1]
+                
                 try:
-                    # 1. 탭으로 우선 분리 시도
-                    parts = line.split('\t')
-                    
-                    # 2. 탭 분리가 잘 안되고 공백 분리 로직이 필요한 경우 (예비책)
-                    # 데이터 명세가 'ID(int) Product(str) Review(str)' 이므로 최소 3개 부분 예상
-                    # 하지만 리뷰 텍스트 내에 탭이 없을 거라 가정하고 마지막 요소를 리뷰로 취급
-                    if len(parts) >= 3:
-                        row_id = int(parts[0]) # 첫 번째는 ID
-                        text = parts[-1]       # 마지막은 Review Text
-                    else:
-                        # 형식이 맞지 않는 경우 공백으로 시도하거나 건너뜀
-                        # 여기서는 안전하게 건너뛰고 카운트
-                        parse_errors += 1
-                        continue
-
-                    data.append({'id': row_id, 'text': text})
-                    
+                    row_id = int(row_id_str)
+                    data.append({'id': row_id, 'text': text_content})
                 except ValueError:
-                    # ID가 숫자가 아닌 경우 등
                     parse_errors += 1
                     continue
 
         if parse_errors > 0:
-            print(f"[Data] Warning: Skipped {parse_errors} lines due to parsing errors.")
+            print(f"[Data] Warning: Skipped {parse_errors} lines due to parsing/format errors.")
         
         print(f"[Data] Successfully loaded {len(data)} samples from {os.path.basename(file_path)}.")
         return data
@@ -178,7 +167,7 @@ class ReviewDataset(Dataset):
 
 class SemanticClassifier(torch.nn.Module):
     """
-    SBERT 임베딩 및 True Path Rule 기반의 DAG 후처리를 포함한 분류기
+    SBERT 임베딩 및 True Path Rule 기반의 DAG 후처리를 포함한 분류기.
     """
     def __init__(self, model_name: str, taxonomy_loader: TaxonomyLoader, device: str = 'cpu') -> None:
         super().__init__()
@@ -190,16 +179,20 @@ class SemanticClassifier(torch.nn.Module):
         self.graph = taxonomy_loader.get_graph()
         self.id_map = taxonomy_loader.get_id_map()
         
+        # [중요] 임베딩 텐서의 인덱스와 실제 Taxonomy ID를 매핑하기 위한 정렬된 리스트
+        self.sorted_label_ids = sorted(self.id_map.keys())
+        
         # 라벨 임베딩 사전 계산
         self.label_embeddings = self._precompute_label_embeddings()
 
     def _precompute_label_embeddings(self) -> torch.Tensor:
-        sorted_ids = sorted(self.id_map.keys())
+        """
+        sorted_label_ids 순서대로 임베딩을 생성합니다.
+        """
         texts_to_encode = []
-        for idx in sorted_ids:
+        for idx in self.sorted_label_ids:
             name = self.id_map[idx]
             keywords = self.graph.nodes[idx].get('keywords', [])
-            # 텍스트 = "이름: 키워드1, 키워드2..."
             text = f"{name}: {', '.join(keywords)}" if keywords else name
             texts_to_encode.append(text)
             
@@ -218,83 +211,83 @@ class SemanticClassifier(torch.nn.Module):
         scores = util.cos_sim(input_embeddings, self.label_embeddings)
         return scores
 
-    def predict(self, texts: List[str], top_k_candidates: int = 15, batch_size: int = 32) -> List[List[str]]:
+    def predict(self, texts: List[str], top_k_candidates: int = 15, batch_size: int = 32) -> List[List[int]]:
+        """
+        예측 결과로 클래스 이름 대신 실제 클래스 ID(int)의 리스트를 반환합니다.
+        """
         print(f"[Predict] Starting prediction for {len(texts)} samples...")
-        # 1. 유사도 계산
         scores_tensor = self.forward(texts, batch_size=batch_size)
         
-        final_predictions = []
-        # 2. DAG Constraint 적용
+        final_predictions_ids = []
         for i in tqdm(range(scores_tensor.shape[0]), desc="Applying DAG Constraints"):
             scores = scores_tensor[i]
+            # ID 리스트 반환
             pred_ids = self._apply_true_path_rule(scores, top_k_candidates)
-            pred_labels = [self.id_map[idx] for idx in pred_ids]
-            final_predictions.append(pred_labels)
+            final_predictions_ids.append(pred_ids)
             
-        return final_predictions
+        return final_predictions_ids
 
     def _apply_true_path_rule(self, scores: torch.Tensor, top_k: int) -> List[int]:
         """
-        True Path Rule 적용 로직:
-        1. 점수가 높은 Anchor부터 선택.
-        2. Anchor의 모든 조상(Ancestors)을 강제 포함.
-        3. 결과 집합이 3개 미만이면 다음 후보 Anchor 탐색.
-        4. 3개 초과 시 'Leaf 노드' 중 '점수'가 낮은 순으로 제거 (Truncation).
+        True Path Rule + Truncation 적용
+        반환값: 실제 Taxonomy ID들의 리스트
         """
-        # 점수 상위 k개 후보 인덱스 추출
+        # 1. Tensor Index(0~N) 기준 Top K 추출
         top_indices = torch.argsort(scores, descending=True)[:top_k].tolist()
         
-        selected_indices: Set[int] = set()
+        selected_actual_ids: Set[int] = set()
         
-        # --- Expansion Phase ---
-        for anchor_idx in top_indices:
-            # 이미 포함된 노드라면 스킵 (상위 노드로 인해 포함되었을 수 있음)
-            if anchor_idx in selected_indices:
+        # 2. Tensor Index -> Actual ID 변환 및 Expansion 수행
+        for tensor_idx in top_indices:
+            # 매핑 정보를 이용해 실제 ID 획득
+            actual_id = self.sorted_label_ids[tensor_idx]
+            
+            if actual_id in selected_actual_ids:
                 continue
             
-            # True Path Rule: Anchor + Ancestors
-            ancestors = nx.ancestors(self.graph, anchor_idx)
-            current_path = ancestors | {anchor_idx}
+            # networkx 그래프는 실제 ID를 노드로 가짐
+            ancestors = nx.ancestors(self.graph, actual_id)
+            current_path = ancestors | {actual_id}
+            selected_actual_ids.update(current_path)
             
-            # 합집합 업데이트
-            selected_indices.update(current_path)
-            
-            # 최소 3개 이상 채워지면 일단 멈추고 Truncation 단계로 이동
-            if len(selected_indices) >= 3:
+            # 최소 3개 이상 채워지면 중단 (이후 Truncation으로 조절)
+            if len(selected_actual_ids) >= 3:
                 break
         
-        selected_list = list(selected_indices)
+        selected_list = list(selected_actual_ids)
         
-        # --- Truncation Phase (최대 3개 유지) ---
-        # 조건: 3개를 초과할 경우, DAG 구조상 제거해도 안전한(자식이 없는) Leaf 노드부터 제거
+        # 3. Truncation: 3개 초과 시 Leaf 제거
+        # 유사도 점수를 조회하기 위해 Actual ID -> Tensor Index 역매핑 필요
+        # 하지만 sorted_label_ids는 정렬되어 있으므로, binary search나 dict를 쓸 수 있으나
+        # 여기서는 scores에 접근하기 위해 id_to_tensor_idx 맵을 잠시 생성하거나, 
+        # 그냥 sorted_label_ids.index()를 쓰면 느릴 수 있음.
+        # 성능을 위해 dict 미리 생성 권장. 여기서는 가독성을 위해 간단히 dict comprehension 사용.
+        id_to_tensor_idx = {uid: idx for idx, uid in enumerate(self.sorted_label_ids)}
+
         while len(selected_list) > 3:
-            # 현재 선택된 노드들로만 구성된 서브그래프
             subgraph = self.graph.subgraph(selected_list)
-            
-            # Out-Degree가 0인 노드 == 현재 집합 내에서의 Leaf
+            # 현재 선택된 집합 내에서의 Leaf (Out-Degree 0)
             leaves = [n for n in subgraph.nodes() if subgraph.out_degree(n) == 0]
             
             if not leaves: 
-                # (이론상 DAG에서는 발생 안 함) 안전장치: 점수 꼴찌 제거
                 leaves = selected_list
-            
-            # Leaf 중 원본 유사도 점수가 가장 낮은 노드(victim) 선정
-            victim = min(leaves, key=lambda idx: scores[idx].item())
-            
+                
+            # Leaf 중 원본 유사도 점수가 가장 낮은 것 제거
+            # scores[tensor_index]를 참조해야 함
+            victim = min(leaves, key=lambda uid: scores[id_to_tensor_idx[uid]].item())
             selected_list.remove(victim)
             
-        # 최종 반환: 점수 높은 순으로 정렬 (가독성 위함)
-        selected_list.sort(key=lambda idx: scores[idx].item(), reverse=True)
+        # 4. 최종 정렬 (점수 높은 순)
+        selected_list.sort(key=lambda uid: scores[id_to_tensor_idx[uid]].item(), reverse=True)
         return selected_list
 
 # ==========================================
 # 3. Main Pipeline Execution
 # ==========================================
 def main():
-    # 1. 시드 고정
     set_seed(42)
     
-    # 2. 경로 설정
+    # 경로 설정
     base_path = "." 
     config = {
         'classes': os.path.join(base_path, 'classes.txt'),
@@ -309,54 +302,36 @@ def main():
 
     print(f"[System] Running on device: {config['device']}")
 
-    # 3. Taxonomy Loader 초기화
-    print("-" * 30)
-    taxonomy = TaxonomyLoader(
-        classes_path=config['classes'], 
-        hierarchy_path=config['hierarchy'], 
-        keywords_path=config['keywords']
-    )
+    # 로더 초기화
+    taxonomy = TaxonomyLoader(config['classes'], config['hierarchy'], config['keywords'])
+    
+    # 모델 초기화
+    classifier = SemanticClassifier(config['model_name'], taxonomy, config['device'])
 
-    # 4. Semantic Classifier 초기화
-    print("-" * 30)
-    classifier = SemanticClassifier(
-        model_name=config['model_name'], 
-        taxonomy_loader=taxonomy, 
-        device=config['device']
-    )
-
-    # 5. 데이터 로드 (파싱 로직 강화됨)
+    # 데이터 로드
     print("-" * 30)
     data_samples = ReviewDataset.load_corpus(config['test_corpus'])
+    
     if not data_samples:
-        print("[Error] No valid test data found. Exiting.")
+        print("[Error] No valid test data found after parsing. Exiting.")
         return
 
-    # 데이터셋 객체 생성
-    test_dataset = ReviewDataset(data_samples)
-    
-    # 입력 텍스트 리스트 추출
-    test_texts = [sample['text'] for sample in test_dataset]
-    test_ids = [sample['id'] for sample in test_dataset]
+    test_texts = [s['text'] for s in data_samples]
+    test_ids = [s['id'] for s in data_samples]
 
-    # 6. 예측 실행
+    # 예측 (ID 리스트 반환)
     print("-" * 30)
-    predictions = classifier.predict(
-        test_texts, 
-        batch_size=config['batch_size']
-    )
+    predictions_ids = classifier.predict(test_texts, batch_size=config['batch_size'])
 
-    # 7. 결과 저장 (id, labels 형식 준수)
+    # 저장 (ID를 쉼표로 연결)
     print("-" * 30)
     results = []
-    for row_id, preds in zip(test_ids, predictions):
-        # 공백으로 구분된 라벨 문자열 생성
-        label_str = " ".join(preds)
+    for row_id, pred_ids in zip(test_ids, predictions_ids):
+        # [수정] ID(int) 리스트를 쉼표로 구분된 문자열로 변환 (예: "10,25,30")
+        label_str = ",".join(map(str, pred_ids))
         results.append({'id': row_id, 'labels': label_str})
     
     df_submission = pd.DataFrame(results)
-    
-    # 컬럼 순서 명시적 지정 (id, labels) 및 저장
     df_submission = df_submission[['id', 'labels']]
     df_submission.to_csv(config['output'], index=False, encoding='utf-8')
     
