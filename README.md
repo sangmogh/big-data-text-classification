@@ -96,11 +96,10 @@ This approach combines semantic search with graph-theoretic post-processing.
 
 ###### 1\. Semantic Embedding (Neural Part)
 
-&nbsp;    Model: We used the all-MiniLM-L6-v2 pre-trained model from Sentence-Transformers. It is chosen for its balance between performance and inference speed.
+&nbsp;    Model: We used the `all-MiniLM-L6-v2` pre-trained model from Sentence-Transformers. It is chosen for its optimal balance between performance and inference speed.
+&nbsp;    Label Representation: We embed the Class Names directly into the vector space.
 
-&nbsp;    Label Representation: To enrich the semantic meaning of each class, we concatenated the Class Name with its Keywords.
-
-&nbsp;                                                   Format: Class Name: Keyword1, Keyword2, ...
+&nbsp;    *Note:* While the report analyzes the potential impact of keyword enrichment, this submission script implements the streamlined Class-Name based inference for maximum efficiency.
 
 &nbsp;    Review Representation: The input product reviews (Product Name + Review Text) are embedded into the same vector space.
 
