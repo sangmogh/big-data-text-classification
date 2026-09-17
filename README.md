@@ -55,8 +55,8 @@
 1\. Clone this repository:
 
 ```bash
-git clone https://github.com/sangmogh/20252R0136DATA30400.git
-cd 20252R0136DATA30400
+git clone https://github.com/sangmogh/big-data-text-classification.git
+cd big-data-text-classification
 ```
 
 2\. Install the required packages:
