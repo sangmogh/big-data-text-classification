@@ -6,9 +6,11 @@
 
 
 
-###### This project implements a Hierarchical Multi-Label Text Classification system for Amazon product reviews. 
+###### A hierarchical multi-label classification project for Amazon product reviews.
 
-###### It utilizes \*\*Sentence-BERT (SBERT)\*\* for semantic embedding and applies \*\*DAG (Directed Acyclic Graph)\*\* constraints to ensure topological consistency in predictions.
+###### The initial SBERT-based approach showed limited performance. By analyzing the actual prediction errors, I found repeated cases where child categories were predicted while their parent categories were missing.
+
+###### I reframed the problem as a hierarchy-consistency issue rather than simply a model-capacity issue, and applied DAG-based True Path Rule post-processing, improving Example-F1 from approximately 0.15 to 0.47.
 
 
 
